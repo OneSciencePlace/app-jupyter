@@ -1,112 +1,170 @@
 # app-jupyter
 
-JupyterLab as an interactive `app-*` container — **branch A** of the
-interactive contract: the app has native `?token=` auth, so it binds the single
-exposed port directly and carries no nginx gate.
+JupyterLab as an interactive `app-*` container, behind the token gate like
+every interactive app: the gate is the session's one TCP listener and checks
+its token; JupyterLab listens on a Unix socket in the session's private
+directory.
 
 ```
-browser ──https──▶ Satellite ──http──▶ 0.0.0.0:OSP_APP_PORT   jupyter lab
+browser ──https──▶ Satellite proxy ──ssh tunnel──▶ $OSP_APP_BIND:$OSP_APP_PORT   nginx gate
+                                                    (127.0.0.1 by default)       │ cookie / 403
+                                                                                 ▼
+                                                  $OSP_APP_SOCK_DIR/app.sock     jupyter lab
 ```
 
 ## Run it
 
-```bash
-TOKEN=$(openssl rand -hex 32)
+The token is never put on a command line: `ps` shows command lines to every
+user on a node. Pass it through the environment.
 
+```bash
+export OSP_APP_TOKEN=$(openssl rand -hex 32)
+
+# Docker (local). -e OSP_APP_TOKEN with no "=value" copies it from your
+# environment. OSP_APP_BIND=0.0.0.0 because `-p` cannot reach a container's
+# loopback; the host side is still published on 127.0.0.1 only.
 docker run --rm --user "$(id -u):$(id -g)" \
-  -p 8888:8888 -v "$PWD:/data" \
-  -e OSP_APP_PORT=8888 -e OSP_APP_TOKEN="$TOKEN" \
+  -p 127.0.0.1:8888:8888 -v "$PWD:/data" \
+  -e OSP_APP_PORT=8888 -e OSP_APP_BIND=0.0.0.0 -e OSP_APP_TOKEN \
   ghcr.io/onescienceplace/app-jupyter:latest
 
-apptainer pull oras://ghcr.io/onescienceplace/app-jupyter-sif:latest
-apptainer run --env OSP_APP_PORT=8888 --env OSP_APP_TOKEN="$TOKEN" \
+# Apptainer, under the OSP interactive run profile.
+# APPTAINERENV_<NAME> reaches the container as <NAME>, even with --cleanenv
+# (SingularityCE: SINGULARITYENV_<NAME>).
+apptainer pull oras://ghcr.io/onescienceplace/app-jupyter-sif:latest   # production pins <version>@sha256:<digest>
+mkdir -p tmp
+export APPTAINERENV_OSP_APP_TOKEN="$OSP_APP_TOKEN"
+apptainer run \
+  --contain --pid --ipc --cleanenv --no-mount bind-paths,cwd \
+  --pwd "$PWD" --bind "$PWD:$PWD" \
+  --env OSP_APP_PORT=8888 --env TMPDIR="$PWD/tmp" \
   app-jupyter-sif_latest.sif
 ```
 
-Then open `https://<session>.<satellite-domain>/?token=$TOKEN`.
+Then open `http://127.0.0.1:8888/?token=<the token>` (add an
+`ssh -L 8888:127.0.0.1:8888 <host>` forward first if it runs elsewhere).
+Through the portal the link is
+`https://<session-label>.<sat-id>.sat.<domain>/?token=<token>`, handed out by
+the launcher once the gate's `/healthz` answers (it asks JupyterLab for
+`/api`).
 
-The container prints its port and entry path on startup, which is what the job
-script needs to register the mapping with Satellite.
+The container prints its port on startup, and the entry path without the
+token when the launcher supplied it. JupyterLab never sees the token, so its
+own banner cannot print it.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `OSP_APP_PORT` | `8888` | the single port served |
-| `OSP_APP_TOKEN` | generated | per-session secret; JupyterLab's own `?token=` |
-| `OSP_APP_TOKEN_NAME` | `token` | fixed here — it is Jupyter's own parameter name |
+| `OSP_APP_PORT` | `8888` | the one TCP port, served by the gate |
+| `OSP_APP_BIND` | `127.0.0.1` | the address it binds; `0.0.0.0` only inside a Docker job's own network, or for local `docker run -p` |
+| `OSP_APP_TOKEN` | generated | per-session secret, checked by the gate |
+| `OSP_APP_TOKEN_NAME` | `token` | the query parameter (and cookie) it arrives in |
 
-## Why there is no gate
+## Why it sits behind the gate
 
-`OSP_APP_TOKEN_NAME` defaults to `token` precisely because that is what JupyterLab
-uses. Setting `--ServerApp.token` satisfies the URL-token requirement with no
-proxy in the middle, so `web/` here contains only `session-env.sh`.
+JupyterLab has its own `?token=` login, and this image used to rely on it,
+binding a TCP port itself. It now sits behind the same nginx gate as every
+other interactive app, for three reasons:
 
-`--ServerApp.trust_xheaders` is the one thing that matters for running behind
-Satellite: TLS is terminated upstream, and without it Jupyter builds `ws://`
-websocket URLs on an `https://` page and the browser refuses them.
+- **One shape for every interactive app.** The same single, authenticated TCP
+  listener, the same `/healthz` for the launcher (the gate asks JupyterLab for
+  `/api`), the same validation, the same access log that never records the
+  token.
+- **No TCP listener of Jupyter's.** JupyterLab listens on
+  `$OSP_APP_SOCK_DIR/app.sock` (`0600`, in the session's `0700` directory),
+  reachable only from inside the session.
+- **The token stays with the gate.** JupyterLab runs with its own token off
+  and without `OSP_APP_TOKEN` in its environment, so neither it nor its
+  kernels and terminals hold the session's secret. Its XSRF protection stays
+  on.
 
+JupyterLab is the session leader under `web/supervise.sh`: **File > Shut
+Down** is a normal log-out and ends the session with status 0; JupyterLab or
+the gate dying ends it with status 1.
 
-## Kernels and scratch paths
+Two settings matter for running behind the Satellite proxy and the gate:
+`--ServerApp.trust_xheaders`, because TLS is terminated upstream and without it
+Jupyter builds `ws://` websocket URLs on an `https://` page that the browser
+refuses; and `--ServerApp.allow_remote_access`, because Jupyter otherwise
+rejects every request whose `Host` header is not localhost — which is every
+request through the proxy.
 
-The token is passed as `JUPYTER_TOKEN` in the environment, never as a command
-line argument: `/proc/<pid>/cmdline` is world-readable, so `ps aux` on a shared
-node would otherwise hand the session to anyone there. `/proc/<pid>/environ` is
-`0400`.
+## Kernels, the session directory and scratch paths
 
+The token reaches the container through the environment, never as a command
+line argument (`/proc/<pid>/cmdline` is world-readable), and only the gate
+keeps it: JupyterLab is started without it.
 
-Kernels run over **unix sockets, not TCP** (`--KernelManager.transport=ipc`).
+Kernels run over **Unix sockets, not TCP** (`--KernelManager.transport=ipc`).
 Under Docker that would be cosmetic — loopback inside the container's own
 network namespace — but Apptainer has no network namespace, so TCP kernel ports
-would land on the compute node's real loopback, visible to every other user with
-a shell there. The sockets come out `srwxr-xr-x`, and connecting to a unix
-socket needs write permission, so nobody else can reach them.
+would land on the compute node's real loopback, reachable by every other
+session there.
 
 `JUPYTER_CONFIG_DIR`, `JUPYTER_DATA_DIR`, `JUPYTER_RUNTIME_DIR` and
-`IPYTHONDIR` are derived at startup from `$TMPDIR` and the runtime uid
-(`$TMPDIR/jupyter-$(id -u)/…`). Jupyter creates these `0700`, so a fixed path
-would leave the second user on a shared `/tmp` unable to write to a directory
-the first one owns.
+`IPYTHONDIR` live in the session's private directory,
+`$OSP_APP_SOCK_DIR/jupyter/…` (a fresh `0700` directory under the private
+`/tmp`). The runtime directory holds the kernel connection files, with the
+keys that authenticate every message to a kernel, and the kernel sockets, so
+it must never be on the shared storage `$TMPDIR` points at. A uid suffix would
+not protect it: under a service account every session has the same uid.
 
-One consequence of keeping them under `/tmp`: the notebook-signing key is
-regenerated every session, so notebook *trust* does not persist and saved
-HTML/JS outputs need a re-run to render. Point `JUPYTER_DATA_DIR` at a path in
-your home directory at run time if you want that to survive.
+One consequence: the notebook-signing key is regenerated every session, so
+notebook *trust* does not persist and saved HTML/JS outputs need a re-run to
+render.
 
-**Scratch paths.** The entrypoint does not trust `$TMPDIR`. A scheduler's
-`/scratch/$USER/job.N` is a host path Apptainer does not bind by default, so it
-probes `$TMPDIR`, `/tmp`, `$HOME` in turn and reports on stderr which it took.
-Pass `--bind /scratch` if you want the real one used.
+**No debugger.** The image removes `debugpy`, so JupyterLab shows no debugger.
+With it, turning the debugger on starts a debug server on a TCP port on the
+node's loopback, and it keeps listening after the debugger is turned off; any
+process on the node could then attach to the kernel without a token.
+
+**One loopback listener remains:** each kernel's pipe for output from
+subprocesses it forks (a `127.0.0.1` port). It acts only on messages that carry
+a random per-kernel key, so another session can neither read from it nor
+inject into it.
+
+**Scratch paths.** Bulk scratch goes under `$TMPDIR`, which the run profile
+points at `<job directory>/tmp`; caches go in a per-session directory there
+(`XDG_CACHE_HOME`, `MPLCONFIGDIR`). The entrypoint does not trust an inherited
+`$TMPDIR`: a scheduler's `/scratch/$USER/job.N` is a host path Apptainer may
+not bind, so it probes `$TMPDIR`, `/tmp`, `$HOME` in turn and reports on stderr
+which it took. Do not bind a scratch parent (`--bind /scratch`) to make it
+work: that shows the container every other job directory of the account.
 
 ## Notebook files
 
 The notebook root is the caller's working directory — `-v "$PWD:/data"` under
-Docker, and whatever directory you ran from under Apptainer. Nothing is stored
-in the image.
-
-Everything Jupyter writes (`JUPYTER_RUNTIME_DIR`, config, data, IPython) is
-redirected to `/tmp`, because the `.sif` filesystem is read-only.
+Docker, and the job directory under Apptainer. Nothing is stored in the image,
+and nothing a user saves outside the working directory survives the session.
 
 ## Build and test locally
 
-Skip GitHub and the registry entirely:
+Skip GitHub and the registry for the image itself (the build pulls the kit
+image, `ghcr.io/onescienceplace/app-kit`, named in the `Dockerfile`):
 
 ```bash
 docker build -t app-jupyter:dev .            # --platform linux/amd64 on Apple Silicon
+export OSP_APP_TOKEN=$(openssl rand -hex 32)
 docker run --rm --user "$(id -u):$(id -g)" \
-  -p 8888:8888 -v "$PWD:/data" \
-  -e OSP_APP_PORT=8888 -e OSP_APP_TOKEN=localdev app-jupyter:dev
+  -p 127.0.0.1:8888:8888 -v "$PWD:/data" \
+  -e OSP_APP_PORT=8888 -e OSP_APP_BIND=0.0.0.0 -e OSP_APP_TOKEN app-jupyter:dev
 
 docker save app-jupyter:dev -o aj.tar
 apptainer build aj.sif docker-archive://aj.tar
-apptainer run --env OSP_APP_PORT=8888 --env OSP_APP_TOKEN=localdev aj.sif
+mkdir -p tmp
+export APPTAINERENV_OSP_APP_TOKEN="$OSP_APP_TOKEN"
+apptainer run \
+  --contain --pid --ipc --cleanenv --no-mount bind-paths,cwd \
+  --pwd "$PWD" --bind "$PWD:$PWD" \
+  --env OSP_APP_PORT=8888 --env TMPDIR="$PWD/tmp" aj.sif
 ```
 
 JupyterLab refuses to start as uid 0, so the entrypoint sets
 `--ServerApp.allow_root=True` for the Docker case; it is a no-op under
 Apptainer, and a no-op with `--user` too.
 
-Open `http://localhost:8888/?token=localdev`. Locally there is no proxy in
-front, so this is plain http and the URL keeps its token — under Satellite the
-scheme is https and the entry path is otherwise identical.
+Open `http://127.0.0.1:8888/?token=<the token>`. Locally there is no proxy in
+front, so this is plain http and the URL keeps its token — through the
+Satellite proxy the scheme is https and the entry path is otherwise identical.
 
 ### Why `--user`
 
@@ -141,5 +199,5 @@ docker run --rm --user "$(id -u):$(id -g)" \
 Set `OSP_APP_USER` to change the name option 1 uses.
 
 `apptainer build` from a local archive needs no root and no fakeroot. Test the
-`.sif` and not just the image: read-only-filesystem bugs never show up under
-`docker run`.
+`.sif` and not just the image, and test it under the run profile:
+read-only-filesystem and small-`/tmp` bugs never show up under `docker run`.
