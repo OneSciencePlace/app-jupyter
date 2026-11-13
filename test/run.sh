@@ -27,6 +27,8 @@ here=$(cd "$(dirname "$0")" && pwd)
 plat="--platform linux/amd64"
 # shellcheck disable=SC2206  # word-splitting wanted
 extra=(${OSP_TEST_BUILD_ARGS:-})
+# macOS's /bin/bash is 3.2, where set -u calls an empty array unbound: so the
+# array is always expanded as ${extra[@]+"${extra[@]}"}, nothing when empty.
 tag="osp-test-child:$$"
 name="osp-test-session-$$"
 work=$(mktemp -d)
@@ -39,7 +41,9 @@ cleanup() { docker rm -f "$name" >/dev/null 2>&1; docker rmi -f "$tag" >/dev/nul
 trap cleanup EXIT
 
 echo "== 1. build the test child FROM $base"
-if docker build $plat "${extra[@]}" --progress plain --build-arg BASE="$base" -t "$tag" "$here/child" \
+# --no-cache: the checks below read what install.sh and finish-build.sh print,
+# and a cached build step prints nothing.
+if docker build $plat ${extra[@]+"${extra[@]}"} --no-cache --progress plain --build-arg BASE="$base" -t "$tag" "$here/child" \
         > "$work/build.log" 2>&1; then
     report ok "the child builds"
 else
@@ -101,10 +105,10 @@ if [ "$negative" = --negative ]; then
     echo "== 3. builds that must fail"
     neg() {  # what, expected text in the log, Dockerfile body after FROM, [file=content ...]
         local what=$1 expect=$2 body=$3; shift 3
-        local d; d=$(mktemp -d -p "$work")
+        local d; d=$(mktemp -d "$work/neg.XXXXXX")
         printf 'ARG BASE\nFROM ${BASE}\n%b\n' "$body" > "$d/Dockerfile"
         for f in "$@"; do mkdir -p "$d/$(dirname "${f%%=*}")"; printf '%b\n' "${f#*=}" > "$d/${f%%=*}"; done
-        if docker build $plat "${extra[@]}" --progress plain --build-arg BASE="$base" "$d" > "$d/log" 2>&1; then
+        if docker build $plat ${extra[@]+"${extra[@]}"} --progress plain --build-arg BASE="$base" "$d" > "$d/log" 2>&1; then
             report fail "refused: $what" "the build succeeded"
         elif grep -qF -- "$expect" "$d/log"; then
             report ok "refused: $what"
