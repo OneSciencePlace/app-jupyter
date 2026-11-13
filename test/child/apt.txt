@@ -1,0 +1,2 @@
+# A setuid program: finish-build.sh must strip it.
+sudo

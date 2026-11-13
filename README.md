@@ -121,19 +121,31 @@ there, and any package that depends on ipykernel installs it again; so
 `osp/finish-build.sh`, the last step of this image's build and of every image
 built on it, removes it and checks that ipykernel finds no debugger.
 
-**Dask.** This image has no Dask, but images built on it may. A
-`dask.distributed` cluster started in a notebook (`Client()`,
-`LocalCluster()`) listens on TCP ports, which under Apptainer are on the
-node's own network: without TLS, any process on the node that connects to the
-scheduler can run code in the session's workers. So when Dask is installed,
-the entrypoint makes a certificate for the session (in the session's private
-directory) and requires mutual TLS for every Dask connection
-(`DASK_DISTRIBUTED__COMM__REQUIRE_ENCRYPTION` and the `…__TLS__…` variables,
-which hold only file paths). Clusters the session starts work as usual;
-anything outside the session is refused. Dask's dashboard is not covered: it
-listens on `0.0.0.0:8787` without authentication. It shows the cluster's
-tasks and logs and cannot run code; `LocalCluster(dashboard_address=None)`
-turns it off.
+**Servers a notebook starts: session hooks.** Some packages start servers when
+a notebook calls them -- Dask's `Client()`, Ray's `ray.init()`. Under Apptainer
+a session has no network of its own, so they listen on the node's network, and
+without a login anyone who connects can run code in the session. Where a
+package can require a login through its own settings alone, a **session hook**
+does it: a small bash file the entrypoint sources at every session start,
+which makes a secret in the session's private directory and points the
+package's settings at it. The notebook does not change.
+
+This image has neither Dask nor Ray, but images built on it may, so it ships
+the hooks for both; each does nothing unless its package is installed:
+
+- `osp/session.d/50-dask-tls.sh`: Dask requires mutual TLS, with a certificate
+  made for the session.
+- `osp/session.d/50-ray-token.sh`: Ray requires its token authentication, with
+  a token made for the session; `finish-build.sh` refuses Ray older than 2.52,
+  which has none.
+
+They are also the examples to copy: `osp/session.d/README.md` explains why they
+are there, the rules a hook follows, and how to write one for another package,
+step by step on the Dask hook. Not covered: Dask's dashboard (`0.0.0.0:8787`,
+no login; it shows tasks and logs and cannot run code;
+`LocalCluster(dashboard_address=None)` turns it off), and servers that can only
+be given a login where they are started (Bokeh or Panel servers, TensorBoard,
+Streamlit, Gradio, PyTorch's distributed store).
 
 **One loopback listener remains:** each kernel's pipe for output from
 subprocesses it forks (a `127.0.0.1` port). It acts only on messages that carry
@@ -156,14 +168,15 @@ and nothing a user saves outside the working directory survives the session.
 
 ## Build your own Jupyter image on this one
 
-An image with your own Python packages is a repository with three files and
+An image with your own Python packages is a repository with a few files and
 this image as its base. You do not edit the `Dockerfile`; you list packages.
 
 ```
 Dockerfile          (below, unchanged)
+.dockerignore       (copy this repository's)
 requirements.txt    Python packages, pip's format: one per line, e.g. pandas==2.3.3
-apt.txt             system packages (Debian names), only if a package needs one;
-                    may be empty
+apt.txt             optional: system packages (Debian names), only if a package needs one
+session.d/          optional: your own session hooks (osp/session.d/README.md)
 ```
 
 ```dockerfile
@@ -171,7 +184,7 @@ apt.txt             system packages (Debian names), only if a package needs one;
 # image's digest (the image's, not the .sif's).
 FROM ghcr.io/onescienceplace/app-jupyter:<version>@sha256:<digest>
 
-COPY requirements.txt apt.txt /tmp/osp/
+COPY . /tmp/osp/
 RUN /app/osp/install.sh /tmp/osp
 RUN /app/osp/finish-build.sh
 ```
@@ -187,14 +200,22 @@ above.
   validated with. A package that needs other versions of them fails the build
   with pip's explanation. Python packages go in `requirements.txt`, never in
   `apt.txt` (apt's would land in the OS's Python, which the kernels do not
-  use).
+  use). Then it adds the hooks in `session.d/`, refusing a name the image
+  already has.
 - **`finish-build.sh`** is always the last `RUN` line, as root (no `USER`
   line before it). It removes `debugpy` again, checks the Jupyter versions,
-  the Unix socket, `pip check` and what the session files need, and strips
-  setuid and setgid bits (anything `apt.txt` installed included). It fails the
+  the Unix socket, `pip check`, what the session files need and the session
+  hooks (and that Ray, if installed, is 2.52 or later), and strips setuid and
+  setgid bits (anything `apt.txt` installed included). It fails the
   build, naming the problem, rather than leaving it to a session.
 - **Everything is installed at build time.** A `.sif` is read-only and
   compute nodes are often offline: `pip install` in a running session fails.
+- **Your packages may start servers.** Dask and Ray are secured by the
+  image's hooks. For anything else that starts a server from a notebook, see
+  `osp/session.d/README.md`: write a hook if the package allows it, or say in
+  your README how it is meant to be used. Keep a short script that starts them
+  (`test/kernel-code-example.py` is one, for Dask and Ray): part B runs it with
+  `validate.sh --kernel-code`, so the record lists every listener they open.
 - **A new image is a new digest,** validated like any other (part B in
   `osp-ops`) before the portal offers it. A fix to this image reaches yours
   when you bump the `FROM` line.

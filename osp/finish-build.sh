@@ -17,7 +17,10 @@
 #   4. pip's dependency check passes (debugpy's absence aside);
 #   5. what the session files in /app/web need (the kit's check-deps.sh), and
 #      openssl, which makes each session's Dask certificate;
-#   6. no setuid or setgid files (S-7): /etc/passwd is group-writable in this
+#   6. the session hooks (/app/osp/session.d) are valid bash, and the tools
+#      they secure can be secured: Ray, if installed, is 2.52 or later (before
+#      that it has no authentication at all);
+#   7. no setuid or setgid files (S-7): /etc/passwd is group-writable in this
 #      image, and under Docker without no-new-privileges a setuid program
 #      plus a writable passwd is a way to root inside the container.
 set -eu
@@ -55,7 +58,27 @@ echo "[finish] 5. session files and tools"
 /app/web/check-deps.sh
 command -v openssl >/dev/null || { echo "finish-build.sh: openssl is missing" >&2; exit 1; }
 
-echo "[finish] 6. setuid and setgid bits"
+echo "[finish] 6. session hooks"
+for _h in /app/osp/session.d/*.sh; do
+    [ -f "$_h" ] || continue
+    bash -n "$_h" || { echo "finish-build.sh: $_h is not valid bash (above)" >&2; exit 1; }
+    echo "[finish]    ${_h##*/}"
+done
+python3 - <<'PY'
+import importlib.metadata as md, sys
+from packaging.version import Version
+try:
+    v = md.version("ray")
+except md.PackageNotFoundError:
+    sys.exit(0)
+if Version(v) < Version("2.52.0"):
+    sys.exit(f"finish-build.sh: ray {v} has no authentication (2.52.0 added it); "
+             "a cluster started in a session would let anyone on the node run code in it. "
+             "Use ray>=2.52.0.")
+print(f"[finish]    ray {v}: token authentication available")
+PY
+
+echo "[finish] 7. setuid and setgid bits"
 find / -xdev -type f -perm /6000 -exec chmod a-s {} + 2>/dev/null || true
 _left=$(find / -xdev -type f -perm /6000 2>/dev/null | head -5)
 if [ -n "$_left" ]; then

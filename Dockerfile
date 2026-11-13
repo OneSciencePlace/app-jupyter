@@ -12,8 +12,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 # nginx and gettext-base (envsubst) are the token gate's; bash is the
 # entrypoint's shell (web/supervise.sh needs `wait -n`). Debian has no
 # nginx-light: its nginx package is the small build. openssl makes each
-# session's Dask certificate (entrypoint.sh), for images built on this one
-# that install Dask.
+# session's Dask certificate (osp/session.d/50-dask-tls.sh), for images built
+# on this one that install Dask.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl git \
         nginx gettext-base bash openssl \

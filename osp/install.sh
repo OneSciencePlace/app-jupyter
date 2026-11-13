@@ -1,8 +1,8 @@
 #!/bin/sh
-# osp/install.sh <dir> - install an image's own packages on top of app-jupyter,
-# at build time, as root. In an image built FROM app-jupyter:
+# osp/install.sh <dir> - install an image's own packages and session hooks on
+# top of app-jupyter, at build time, as root. In an image built FROM app-jupyter:
 #
-#   COPY requirements.txt apt.txt /tmp/osp/
+#   COPY . /tmp/osp/
 #   RUN /app/osp/install.sh /tmp/osp
 #   RUN /app/osp/finish-build.sh          # always the last RUN line
 #
@@ -12,8 +12,12 @@
 #                         installed with apt would land in the OS's Python, not
 #                         the one JupyterLab and its kernels use.
 # <dir>/requirements.txt  Python packages, in pip's requirements format.
+# <dir>/session.d/*.sh    session hooks, added to /app/osp/session.d/: sourced
+#                         by the entrypoint at every session start
+#                         (/app/osp/session.d/README.md). A hook may not
+#                         replace one already in the image.
 #
-# Both are optional; '#' starts a comment. pip installs under the constraints
+# All three are optional; '#' starts a comment in the two lists. pip installs under the constraints
 # in /app/osp/constraints.txt, which hold JupyterLab, Jupyter Server, the
 # kernel and their plumbing at the versions this image was built and validated
 # with: a package that needs other versions of them fails the build here, with
@@ -67,5 +71,24 @@ newer Jupyter.
 MSG
         exit 1
     fi
+fi
+# --- session hooks -----------------------------------------------------------
+if [ -d "$dir/session.d" ]; then
+    for h in "$dir"/session.d/*.sh; do
+        [ -f "$h" ] || continue
+        name=${h##*/}
+        case $name in
+            *[!A-Za-z0-9._-]*)
+                echo "install.sh: session.d/$name: use letters, digits, '.', '_' and '-' in hook names" >&2
+                exit 1 ;;
+        esac
+        if [ -e "/app/osp/session.d/$name" ]; then
+            echo "install.sh: session.d/$name: the image already has a hook of that name; choose another" >&2
+            exit 1
+        fi
+        bash -n "$h" || { echo "install.sh: session.d/$name: not valid bash (above)" >&2; exit 1; }
+        install -m 0644 "$h" "/app/osp/session.d/$name"
+        echo "[install] session hook $name"
+    done
 fi
 echo "[install] done"
