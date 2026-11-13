@@ -2,8 +2,9 @@
 """session-checks.py - run inside a test child's running session container by
 test/run.sh (docker exec), as the session's user.
 
-  inside <pid>   re-run with the environment of process <pid> (JupyterLab, whose
-                 environment every kernel inherits) and check what a notebook
+  inside         re-run with the environment of JupyterLab's process (found in
+                 /proc: images have no pgrep), which every kernel inherits, and
+                 check what a notebook
                  would see: the hooks' variables (paths only, files 0600 in the
                  session directory), no session token; then start a Dask
                  cluster and a Ray cluster the way a notebook does, run a task
@@ -166,9 +167,27 @@ except Exception as e:
            out.strip().splitlines()[-1] if out.strip() else "no connection within 90 s")
 
 
+def jupyter_pid():
+    """The JupyterLab server: the process whose command line runs jupyter-lab
+    (as the program, or as the script its interpreter runs)."""
+    found = []
+    for d in os.listdir("/proc"):
+        if not d.isdigit():
+            continue
+        try:
+            argv = open(f"/proc/{d}/cmdline", "rb").read().split(b"\0")
+        except OSError:
+            continue
+        if any(os.path.basename(a) == b"jupyter-lab" for a in argv[:2]):
+            found.append(int(d))
+    if not found:
+        sys.exit("session-checks: no jupyter-lab process found")
+    return min(found)
+
+
 if __name__ == "__main__":
     if sys.argv[1:2] == ["inside"]:
-        pid = sys.argv[2]
+        pid = jupyter_pid()
         raw = open(f"/proc/{pid}/environ", "rb").read().split(b"\0")
         env = dict(kv.decode().split("=", 1) for kv in raw if b"=" in kv)
         os.execve(sys.executable, [sys.executable, __file__, "inside-run"], env)

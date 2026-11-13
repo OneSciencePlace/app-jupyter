@@ -242,6 +242,13 @@ apptainer run \
   --env OSP_APP_PORT=8888 --env TMPDIR="$PWD/tmp" aj.sif
 ```
 
+**Apple Silicon:** the image is linux/amd64 only. It builds under emulation
+(`--platform linux/amd64`, slowly), but a session does not start there: the
+session supervisor (`web/supervise.sh`, from the kit) checks each program it
+starts by its name in `/proc/<pid>/comm`, and under emulation JupyterLab shows
+as `python3.14`, not `jupyter-lab`, so the launch check ends the session. Run
+sessions on an amd64 host.
+
 JupyterLab refuses to start as uid 0, so the entrypoint sets
 `--ServerApp.allow_root=True` for the Docker case; it is a no-op under
 Apptainer, and a no-op with `--user` too.

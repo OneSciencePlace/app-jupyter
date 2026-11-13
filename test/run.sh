@@ -19,7 +19,11 @@
 # is tools/validate.sh in osp-ops, under the run profile.
 #
 # OSP_TEST_BUILD_ARGS: extra `docker build` arguments (a proxy, --network host).
-# On Apple Silicon everything runs as linux/amd64, under emulation: slow.
+# On Apple Silicon the image runs as linux/amd64 under emulation: the builds
+# (1, 3) work, slowly, but no session can start (2 is skipped): the session
+# supervisor checks each program by its name in /proc/<pid>/comm, and under
+# emulation JupyterLab shows as its interpreter, python3.14. Run 2 on an amd64
+# host, such as the test VM.
 set -u
 base=${1:?usage: test/run.sh <app-jupyter image> [--negative]}
 negative=${2:-}
@@ -65,6 +69,15 @@ case $img in *"setuid=0 "*) report ok "no setuid/setgid files (sudo stripped)";;
 case $img in *"debugpy=absent"*) report ok "debugpy absent";; *) report fail "debugpy absent";; esac
 
 echo "== 2. a session of it"
+case "$(uname -m)" in
+    arm64|aarch64)
+        echo "SKIP  the session checks: this host is $(uname -m), and an amd64 image under emulation"
+        echo "      cannot start a session (the supervisor's launch check sees python3.14, not"
+        echo "      jupyter-lab). Run this script on an amd64 host for them."
+        skip_session=1 ;;
+    *)  skip_session= ;;
+esac
+if [ -z "$skip_session" ]; then
 OSP_APP_TOKEN=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
 export OSP_APP_TOKEN
 docker run -d $plat --name "$name" --user 1000:1000 --shm-size 1g -e OSP_APP_TOKEN "$tag" >/dev/null
@@ -79,8 +92,7 @@ for l in "Dask: TLS with this session's certificate" "Ray: token authentication 
     docker logs "$name" 2>&1 | grep -qF "[app] $l" && report ok "log: $l" || report fail "log: $l"
 done
 docker cp "$here/session-checks.py" "$name:/tmp/session-checks.py" >/dev/null
-jpid=$(docker exec "$name" pgrep -f 'bin/jupyter-lab' | head -1)
-docker exec -u 1000:1000 "$name" python3 /tmp/session-checks.py inside "$jpid" > "$work/inside.log" 2>&1 &
+docker exec -u 1000:1000 "$name" python3 /tmp/session-checks.py inside > "$work/inside.log" 2>&1 &
 inside=$!
 for _ in $(seq 360); do
     docker exec "$name" test -f /tmp/osp-test/ready 2>/dev/null && break
@@ -100,6 +112,7 @@ echo "-- as another session (no secrets):"; grep -E '^(PASS|FAIL)' "$work/outsid
 [ "$in_rc" = 0 ] || failed=$((failed + 1))
 [ "$out_rc" = 0 ] || failed=$((failed + 1))
 docker rm -f "$name" >/dev/null 2>&1
+fi
 
 if [ "$negative" = --negative ]; then
     echo "== 3. builds that must fail"
@@ -125,5 +138,6 @@ if [ "$negative" = --negative ]; then
 fi
 
 echo
-[ "$failed" = 0 ] && echo "all passed" || echo "$failed failed"
+[ "$failed" = 0 ] && echo "all passed${skip_session:+ (the session checks skipped: run them on an amd64 host)}" \
+    || echo "$failed failed"
 [ "$failed" = 0 ]
