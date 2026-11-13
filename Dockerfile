@@ -1,7 +1,7 @@
 # The shared session files (web/: the session contract, the token gate, the
 # supervisor) come from app-template's kit image rather than a copy kept in
 # this repo: a fix to them reaches this image by bumping this line.
-FROM ghcr.io/onescienceplace/app-kit:1.1.0 AS kit
+FROM ghcr.io/onescienceplace/app-kit:1.1.0@sha256:8be57aac17696826c15692cf256dc69681ecf7b6137021ebeef09e4776118368 AS kit
 
 FROM python:3.14-slim
 
