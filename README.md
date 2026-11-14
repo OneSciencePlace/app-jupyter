@@ -116,6 +116,36 @@ render.
 With it, turning the debugger on starts a debug server on a TCP port on the
 node's loopback, and it keeps listening after the debugger is turned off; any
 process on the node could then attach to the kernel without a token.
+ipykernel declares `debugpy` as a dependency but imports it only if it is
+there, and any package that depends on ipykernel installs it again; so
+`osp/finish-build.sh`, the last step of this image's build and of every image
+built on it, removes it and checks that ipykernel finds no debugger.
+
+**Servers a notebook starts: session hooks.** Some packages start servers when
+a notebook calls them -- Dask's `Client()`, Ray's `ray.init()`. Under Apptainer
+a session has no network of its own, so they listen on the node's network, and
+without a login anyone who connects can run code in the session. Where a
+package can require a login through its own settings alone, a **session hook**
+does it: a small bash file the entrypoint sources at every session start,
+which makes a secret in the session's private directory and points the
+package's settings at it. The notebook does not change.
+
+This image has neither Dask nor Ray, but images built on it may, so it ships
+the hooks for both; each does nothing unless its package is installed:
+
+- `osp/session.d/50-dask-tls.sh`: Dask requires mutual TLS, with a certificate
+  made for the session.
+- `osp/session.d/50-ray-token.sh`: Ray requires its token authentication, with
+  a token made for the session; `finish-build.sh` refuses Ray older than 2.52,
+  which has none.
+
+They are also the examples to copy: `osp/session.d/README.md` explains why they
+are there, the rules a hook follows, and how to write one for another package,
+step by step on the Dask hook. Not covered: Dask's dashboard (`0.0.0.0:8787`,
+no login; it shows tasks and logs and cannot run code;
+`LocalCluster(dashboard_address=None)` turns it off), and servers that can only
+be given a login where they are started (Bokeh or Panel servers, TensorBoard,
+Streamlit, Gradio, PyTorch's distributed store).
 
 **One loopback listener remains:** each kernel's pipe for output from
 subprocesses it forks (a `127.0.0.1` port). It acts only on messages that carry
@@ -135,6 +165,60 @@ work: that shows the container every other job directory of the account.
 The notebook root is the caller's working directory — `-v "$PWD:/data"` under
 Docker, and the job directory under Apptainer. Nothing is stored in the image,
 and nothing a user saves outside the working directory survives the session.
+
+## Build your own Jupyter image on this one
+
+An image with your own Python packages is a repository with a few files and
+this image as its base. You do not edit the `Dockerfile`; you list packages.
+
+```
+Dockerfile          (below, unchanged)
+.dockerignore       (copy this repository's)
+requirements.txt    Python packages, pip's format: one per line, e.g. pandas==2.3.3
+apt.txt             optional: system packages (Debian names), only if a package needs one
+session.d/          optional: your own session hooks (osp/session.d/README.md)
+```
+
+```dockerfile
+# The base: JupyterLab behind the gate, hardened. Pin it by tag and the OCI
+# image's digest (the image's, not the .sif's).
+FROM ghcr.io/onescienceplace/app-jupyter:<version>@sha256:<digest>
+
+COPY . /tmp/osp/
+RUN /app/osp/install.sh /tmp/osp
+RUN /app/osp/finish-build.sh
+```
+
+Copy `.github/workflows/build-and-push.yml` unchanged: it builds the image and
+its `.sif`. Everything else -- the entrypoint, the gate, the session
+directory, the run options -- comes from this image and works as described
+above.
+
+- **`install.sh`** installs `apt.txt`, then `requirements.txt` under
+  `/app/osp/constraints.txt`: JupyterLab, Jupyter Server, ipykernel, pyzmq,
+  tornado and their plumbing stay at the versions this image was built and
+  validated with. A package that needs other versions of them fails the build
+  with pip's explanation. Python packages go in `requirements.txt`, never in
+  `apt.txt` (apt's would land in the OS's Python, which the kernels do not
+  use). Then it adds the hooks in `session.d/`, refusing a name the image
+  already has.
+- **`finish-build.sh`** is always the last `RUN` line, as root (no `USER`
+  line before it). It removes `debugpy` again, checks the Jupyter versions,
+  the Unix socket, `pip check`, what the session files need and the session
+  hooks (and that Ray, if installed, is 2.52 or later), and strips setuid and
+  setgid bits (anything `apt.txt` installed included). It fails the
+  build, naming the problem, rather than leaving it to a session.
+- **Everything is installed at build time.** A `.sif` is read-only and
+  compute nodes are often offline: `pip install` in a running session fails.
+- **Your packages may start servers.** Dask and Ray are secured by the
+  image's hooks. For anything else that starts a server from a notebook, see
+  `osp/session.d/README.md`: write a hook if the package allows it, or say in
+  your README how it is meant to be used. Keep a short script that starts them
+  (`test/kernel-code-example.py` is one, for Dask and Ray): part B runs it with
+  `validate.sh --kernel-code`, so the record lists every listener they open.
+- **A new image is a new digest,** validated like any other (part B in
+  `osp-ops`) before the portal offers it. A fix to this image reaches yours
+  when you bump the `FROM` line.
 
 ## Build and test locally
 
@@ -157,6 +241,13 @@ apptainer run \
   --pwd "$PWD" --bind "$PWD:$PWD" \
   --env OSP_APP_PORT=8888 --env TMPDIR="$PWD/tmp" aj.sif
 ```
+
+**Apple Silicon:** the image is linux/amd64 only. It builds under emulation
+(`--platform linux/amd64`, slowly), but a session does not start there: the
+session supervisor (`web/supervise.sh`, from the kit) checks each program it
+starts by its name in `/proc/<pid>/comm`, and under emulation JupyterLab shows
+as `python3.14`, not `jupyter-lab`, so the launch check ends the session. Run
+sessions on an amd64 host.
 
 JupyterLab refuses to start as uid 0, so the entrypoint sets
 `--ServerApp.allow_root=True` for the Docker case; it is a no-op under

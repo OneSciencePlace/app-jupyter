@@ -1,0 +1,4 @@
+# What the test child exercises:
+dask[distributed]   # 50-dask-tls.sh
+ray[default]        # 50-ray-token.sh; [default] adds the dashboard and its Jobs API
+jupyter-console     # depends on ipykernel, so pip brings debugpy back: finish-build.sh must remove it

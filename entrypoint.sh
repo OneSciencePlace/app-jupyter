@@ -74,6 +74,25 @@ if [ "${MPLCONFIGDIR:-}" = /tmp/matplotlib ]; then
     export MPLCONFIGDIR="$_bulk/matplotlib"
 fi
 
+# Session hooks: /app/osp/session.d/*.sh, sourced in name order, here --
+# after the session directory, HOME, the caches and Jupyter's directories are
+# set, before JupyterLab starts, so whatever a hook exports reaches JupyterLab,
+# its kernels and terminals. This image ships hooks that secure tools a notebook
+# may start as servers on the node's network (50-dask-tls.sh, 50-ray-token.sh);
+# each does nothing unless its tool is installed. Images built on this one may
+# add their own (session.d/ beside their requirements.txt). The contract is in
+# /app/osp/session.d/README.md.
+#
+# osp_has_module <name>: is this Python module installed? For hooks.
+osp_has_module() {
+    python3 -c 'import importlib.util as u, sys; sys.exit(u.find_spec(sys.argv[1]) is None)' "$1" 2>/dev/null
+}
+for _hook in /app/osp/session.d/*.sh; do
+    [ -f "$_hook" ] || continue
+    # shellcheck source=/dev/null
+    . "$_hook"
+done
+
 # JupyterLab on the session's Unix socket (0600, in the 0700 session
 # directory), never on TCP. It is the session leader: File > Shut Down is a
 # normal log-out and ends the session with status 0. It runs without
