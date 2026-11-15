@@ -9,8 +9,28 @@ from distributed import Client, LocalCluster
 cluster = LocalCluster(n_workers=1, threads_per_worker=1)
 client = Client(cluster)
 print("dask", cluster.scheduler_address, client.submit(lambda: 6 * 7).result())
+# What each Dask port is ("listener <host:port> <role>", for osp-ops'
+# listener-check.py, which validate.sh runs on every listener besides the gate).
+from urllib.parse import urlparse
+def hostport(addr):
+    u = urlparse(addr)
+    return f"{u.hostname}:{u.port}"
+print("listener", hostport(cluster.scheduler_address), "dask-scheduler")
+dash = cluster.scheduler_info.get("services", {}).get("dashboard")
+if dash:
+    print("listener", f"0.0.0.0:{dash}", "dask-dashboard (NEW-19: no login; shows tasks and logs)")
+for waddr, w in client.scheduler_info()["workers"].items():
+    print("listener", hostport(waddr), "dask-worker")
+    if w.get("nanny"):
+        print("listener", hostport(w["nanny"]), "dask-nanny")
+    for name, port in (w.get("services") or {}).items():
+        print("listener", f"127.0.0.1:{port}", f"dask-worker-{name} (NEW-19: /health, /metrics; no login)")
+pipe = getattr(getattr(get_ipython().kernel, "iopub_thread", None), "_pipe_port", None)
+print("listener", f"127.0.0.1:{pipe}" if pipe else "?:0", "kernel-subprocess-pipe (signed with the kernel's key)")
 
-# Ray (secured by 50-ray-token.sh: token authentication).
+# Ray (secured by 50-ray-token.sh: token authentication). Its many ports
+# (control service, raylet, object manager, dashboard, agents, one per worker)
+# get no role lines yet: listener-check.py marks them "no role given".
 import ray
 ray.init(include_dashboard=True, log_to_driver=False)
 print("ray", ray.get(ray.remote(lambda: 42).remote()))

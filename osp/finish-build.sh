@@ -20,7 +20,11 @@
 #   6. the session hooks (/app/osp/session.d) are valid bash, and the tools
 #      they secure can be secured: Ray, if installed, is 2.52 or later (before
 #      that it has no authentication at all);
-#   7. no setuid or setgid files (S-7): /etc/passwd is group-writable in this
+#   7. app-jupyter's own files -- the entrypoint, /app/web/, the build tools,
+#      its hooks, the constraints -- are the ones it was built with
+#      (/app/osp/manifest.sha256): an image that replaced one would run
+#      without the protections they give;
+#   8. no setuid or setgid files (S-7): /etc/passwd is group-writable in this
 #      image, and under Docker without no-new-privileges a setuid program
 #      plus a writable passwd is a way to root inside the container.
 set -eu
@@ -78,7 +82,21 @@ if Version(v) < Version("2.52.0"):
 print(f"[finish]    ray {v}: token authentication available")
 PY
 
-echo "[finish] 7. setuid and setgid bits"
+echo "[finish] 7. app-jupyter's own files"
+if [ -f /app/osp/manifest.sha256 ]; then
+    if ! _bad=$(cd / && sha256sum -c --quiet /app/osp/manifest.sha256 2>&1); then
+        printf '%s\n' "$_bad" >&2
+        echo "finish-build.sh: files of app-jupyter were changed (above). Add to the image" >&2
+        echo "  (requirements.txt, apt.txt, session.d/); do not replace app-jupyter's files." >&2
+        exit 1
+    fi
+    echo "[finish]    $(grep -c . /app/osp/manifest.sha256) files as app-jupyter built them"
+else
+    echo "finish-build.sh: /app/osp/manifest.sha256 is missing" >&2
+    exit 1
+fi
+
+echo "[finish] 8. setuid and setgid bits"
 find / -xdev -type f -perm /6000 -exec chmod a-s {} + 2>/dev/null || true
 _left=$(find / -xdev -type f -perm /6000 2>/dev/null | head -5)
 if [ -n "$_left" ]; then
