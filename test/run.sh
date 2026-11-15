@@ -12,7 +12,7 @@
 #    environment only) and runs test/session-checks.py: as a notebook would
 #    (the hooks' settings, Dask and Ray clusters that work), then as an
 #    outsider without the session's secrets (each refused).
-# 3. With --negative, five builds that must fail, each for its stated reason.
+# 3. With --negative, six builds that must fail, each for its stated reason.
 #
 # This tests what app-jupyter itself promises (osp/install.sh,
 # osp/finish-build.sh, the session hooks). It is not part B: an image's part B
@@ -57,7 +57,10 @@ has() { grep -q -- "$1" "$work/build.log"; }
 has "\[install\] session hook 60-test-hook.sh" && report ok "install.sh added the child's hook" || report fail "install.sh added the child's hook"
 has "removed (ipykernel" && report ok "finish-build.sh removed the debugpy pip brought back" || report fail "finish-build.sh removed the debugpy pip brought back"
 has "\[finish\]    50-dask-tls.sh" && has "\[finish\]    50-ray-token.sh" && has "\[finish\]    60-test-hook.sh" \
-    && report ok "finish-build.sh checked all three hooks" || report fail "finish-build.sh checked all three hooks"
+    && has "\[finish\]    65-tries-user-site.sh" \
+    && report ok "finish-build.sh checked all four hooks" || report fail "finish-build.sh checked all four hooks"
+has "files as app-jupyter built them" && report ok "finish-build.sh: app-jupyter's files unchanged" \
+    || report fail "finish-build.sh: app-jupyter's files unchanged"
 has "token authentication available" && report ok "finish-build.sh accepted Ray's version" || report fail "finish-build.sh accepted Ray's version"
 has "\[finish\] ok" && report ok "finish-build.sh: ok" || report fail "finish-build.sh: ok"
 
@@ -88,7 +91,8 @@ for _ in $(seq 240); do
     sleep 0.5
 done
 [ -n "$up" ] && report ok "the session started" || { report fail "the session started"; docker logs "$name" 2>&1 | grep -v -i token | tail -20; exit 1; }
-for l in "Dask: TLS with this session's certificate" "Ray: token authentication (token)" "test hook: ran"; do
+for l in "Dask: TLS with this session's certificate" "Ray: token authentication (token)" "test hook: ran" \
+         "test hook: tried to turn user site packages back on"; do
     docker logs "$name" 2>&1 | grep -qF "[app] $l" && report ok "log: $l" || report fail "log: $l"
 done
 docker cp "$here/session-checks.py" "$name:/tmp/session-checks.py" >/dev/null
@@ -135,6 +139,8 @@ if [ "$negative" = --negative ]; then
     neg "a hook that is not valid bash" "not valid bash" "$std" "session.d/60-bad.sh=if then fi"
     neg "pip around install.sh moves a pinned package" "jupyter_pins: tornado is" 'RUN pip install --no-cache-dir tornado==6.5.2\nRUN /app/osp/finish-build.sh'
     neg "a USER line before finish-build.sh" "must run as root" 'USER 1000\nRUN /app/osp/finish-build.sh'
+    neg "a replaced entrypoint" "files of app-jupyter were changed" \
+        'RUN printf "#!/bin/sh\\nexec jupyter-lab --ip=0.0.0.0\\n" > /app/entrypoint.sh\nRUN /app/osp/finish-build.sh'
 fi
 
 echo

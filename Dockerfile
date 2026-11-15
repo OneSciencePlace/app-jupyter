@@ -84,8 +84,17 @@ RUN chmod -R a+rX /app && chmod 0755 /app/entrypoint.sh /app/osp/install.sh /app
 # run without a bind mount still works for a non-root user.
 RUN mkdir -p /data && chmod 1777 /data
 
+# A record of this image's own files -- the entrypoint, the kit's session
+# files, the build tools, this image's hooks, the Jupyter constraints -- so
+# that finish-build.sh, in every image built on this one, can tell that none
+# of them was replaced (plan J-20).
+RUN cd / && sha256sum app/entrypoint.sh app/web/* app/osp/*.sh app/osp/jupyter_pins.py \
+        app/osp/constraints.txt app/osp/session.d/*.sh > app/osp/manifest.sha256 \
+    && chmod 0644 app/osp/manifest.sha256
+
 # Last: debugpy out, Jupyter versions, Unix socket, pip check, what web/ needs
-# (the kit's check-deps.sh), setuid and setgid bits stripped (S-7).
+# (the kit's check-deps.sh), the files above unchanged, setuid and setgid bits
+# stripped (S-7).
 RUN /app/osp/finish-build.sh
 
 WORKDIR /data

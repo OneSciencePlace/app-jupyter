@@ -121,6 +121,17 @@ there, and any package that depends on ipykernel installs it again; so
 `osp/finish-build.sh`, the last step of this image's build and of every image
 built on it, removes it and checks that ipykernel finds no debugger.
 
+**No packages from a home directory.** An app definition may mount a home
+directory into the session: a persistent one per student, or a user
+account's own. Python would then load packages installed there
+(`~/.local/lib/python3.14`, from `pip install --user`) ahead of the image's,
+in JupyterLab and every kernel: a different Jupyter Server than the one
+validated, or a `debugpy` that brings the debugger back. So the entrypoint sets
+`PYTHONNOUSERSITE=1` for JupyterLab, its kernels and terminals, after the
+session hooks, so that neither an image's `ENV` nor a hook turns it off. It
+is a default rather than a barrier: a user's own code can still add a path
+deliberately, affecting only their own session. Packages belong in the image.
+
 **Servers a notebook starts: session hooks.** Some packages start servers when
 a notebook calls them -- Dask's `Client()`, Ray's `ray.init()`. Under Apptainer
 a session has no network of its own, so they listen on the node's network, and
@@ -205,8 +216,10 @@ above.
 - **`finish-build.sh`** is always the last `RUN` line, as root (no `USER`
   line before it). It removes `debugpy` again, checks the Jupyter versions,
   the Unix socket, `pip check`, what the session files need and the session
-  hooks (and that Ray, if installed, is 2.52 or later), and strips setuid and
-  setgid bits (anything `apt.txt` installed included). It fails the
+  hooks (and that Ray, if installed, is 2.52 or later), checks that this
+  image's own files (the entrypoint, `/app/web/`, `/app/osp/`) are unchanged,
+  and strips setuid and setgid bits (anything `apt.txt` installed included).
+  Add to the image; never replace this image's files. It fails the
   build, naming the problem, rather than leaving it to a session.
 - **Everything is installed at build time.** A `.sif` is read-only and
   compute nodes are often offline: `pip install` in a running session fails.

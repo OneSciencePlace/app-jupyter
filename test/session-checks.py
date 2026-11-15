@@ -52,6 +52,15 @@ def inside_run():
     report("OSP_APP_TOKEN" not in env, "no session token in the kernel environment")
     report(env.get("OSP_TEST_HOOK") == "ran", "the child's own hook ran (60-test-hook.sh)")
 
+    # J-20: no packages from a home directory, whatever 65-tries-user-site.sh did.
+    import site
+    planted = os.path.join(site.getusersitepackages(), "osp_planted_usersite.py")
+    report(os.path.isfile(planted), "the test hook planted a module in the user site")
+    report(env.get("PYTHONNOUSERSITE") == "1", "PYTHONNOUSERSITE=1 despite the hook")
+    report(site.ENABLE_USER_SITE is False, "Python's user site is off")
+    r = subprocess.run([sys.executable, "-c", "import osp_planted_usersite"], capture_output=True)
+    report(r.returncode != 0, "a module in the user site does not import")
+
     # Dask: 50-dask-tls.sh
     report(env.get("DASK_DISTRIBUTED__COMM__REQUIRE_ENCRYPTION") == "True", "Dask: encryption required")
     for k in ("CA_FILE", "SCHEDULER__CERT", "WORKER__CERT", "CLIENT__CERT"):

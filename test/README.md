@@ -8,13 +8,16 @@ it:
 - `osp/install.sh`: packages installed, the child's own hook added;
 - `osp/finish-build.sh`: debugpy removed again (the child's `jupyter-console`
   brings it back), the hooks checked, Ray's version accepted, setuid bits
-  stripped (the child's `sudo`);
+  stripped (the child's `sudo`), app-jupyter's own files unchanged;
 - the session hooks, in a running session: as a notebook, Dask and Ray
   clusters work with the settings the hooks made (paths only, private files in
   the session directory); as another session, without those secrets, both are
   refused (Dask with no certificate and with one of its own; Ray's Jobs API and
   its control service without the token);
-- with `--negative`, five builds that must fail, each for its stated reason.
+- J-20: a hook in the child turns Python's user site back on and plants a
+  module there; neither reaches a kernel;
+- with `--negative`, six builds that must fail, each for its stated reason
+  (one replaces app-jupyter's entrypoint).
 
 Run it on the branch image before a release
 (`ghcr.io/onescienceplace/app-jupyter:sha-<short>`), and whenever

@@ -74,6 +74,17 @@ if [ "${MPLCONFIGDIR:-}" = /tmp/matplotlib ]; then
     export MPLCONFIGDIR="$_bulk/matplotlib"
 fi
 
+# No Python packages from a home directory (plan J-20). Where the app
+# definition mounts a home -- a class's per-user directory, a user account's
+# own home -- Python would put its user site (~/.local/lib/python3.14) ahead
+# of the image's packages, for JupyterLab and every kernel: an unvalidated
+# jupyter_server for the server, or a debugpy that brings the debugger back.
+# Set before the hooks, so their own python3 calls ignore it too, and again
+# after them, below, so that neither the image's ENV nor a hook can turn it
+# off. Kernels and terminals inherit it. It is a default, not a barrier: the
+# session's own code can still add a path deliberately, affecting only itself.
+export PYTHONNOUSERSITE=1
+
 # Session hooks: /app/osp/session.d/*.sh, sourced in name order, here --
 # after the session directory, HOME, the caches and Jupyter's directories are
 # set, before JupyterLab starts, so whatever a hook exports reaches JupyterLab,
@@ -92,6 +103,7 @@ for _hook in /app/osp/session.d/*.sh; do
     # shellcheck source=/dev/null
     . "$_hook"
 done
+export PYTHONNOUSERSITE=1       # whatever a hook did (above)
 
 # JupyterLab on the session's Unix socket (0600, in the 0700 session
 # directory), never on TCP. It is the session leader: File > Shut Down is a
